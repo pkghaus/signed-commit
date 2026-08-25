@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: shellcheck
+        # Pinned by digest rather than taken from the runner image, whose
+        # shellcheck moves on its own schedule and differs at info level: a
+        # lint that passes locally and fails in CI for no reason anyone
+        # changed is worse than a slightly stale linter.
+        run: |
+          docker run --rm \
+            --volume "$PWD:/repo" \
+            --workdir /repo \
+            koalaman/shellcheck@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d \
+            commit-branch.sh tests/*.sh
+
+      - name: Lint the action metadata and its inline shell
+        run: tests/lint-action.sh
+
+      - name: Test
+        run: tests/run.sh
+
+      - name: actionlint
+        # Pinned by digest; go-yaml inside it also rejects duplicate mapping
+        # keys, which GitHub's parser rejects but many local checks accept.
+        run: |
+          docker run --rm \
+            --volume "$PWD:/repo" \
+            --workdir /repo \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -color

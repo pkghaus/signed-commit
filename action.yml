@@ -1,0 +1,46 @@
+name: Signed commit to a branch
+description: >-
+  Commit a working tree to a branch through GitHub's API, so GitHub signs the
+  commit server-side and no private key has to reach the runner.
+inputs:
+  workdir:
+    description: Directory whose tree is committed. Must be a checkout of `branch`.
+    required: true
+  branch:
+    description: Branch to commit onto. It must already exist; the API cannot create one.
+    required: true
+  message:
+    description: Commit message headline.
+    required: true
+  pathspec:
+    description: >-
+      Optional pathspecs, one per line. With any, only matching paths are
+      committed, so a stray file written elsewhere cannot ride along.
+    required: false
+    default: ""
+  token:
+    description: >-
+      A token with contents:write. Passed explicitly rather than defaulted:
+      a composite action does not inherit the caller's secrets, and an input
+      default that silently resolved to the wrong token would be worse than
+      a required argument.
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        WORKDIR: ${{ inputs.workdir }}
+        BRANCH: ${{ inputs.branch }}
+        MESSAGE: ${{ inputs.message }}
+        PATHSPEC: ${{ inputs.pathspec }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+      # No ${{ }} inside the run body: expressions arrive through env, so a
+      # value containing shell metacharacters cannot become shell.
+      run: |
+        specs=()
+        while IFS= read -r line; do
+          [ -n "$line" ] && specs+=("$line")
+        done <<< "$PATHSPEC"
+        "$GITHUB_ACTION_PATH/commit-branch.sh" \
+          "$WORKDIR" "$BRANCH" "$MESSAGE" "${specs[@]}"
