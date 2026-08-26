@@ -10,6 +10,9 @@
 #   tests/lint-action.sh
 
 set -euo pipefail
+# Without this, set -e stops at the edge of a command substitution: a function
+# called as x="$(f)" keeps running after a failure instead of aborting.
+shopt -s inherit_errexit
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

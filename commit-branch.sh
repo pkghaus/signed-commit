@@ -27,6 +27,9 @@
 # something genuinely unexpected happened and the run should fail.
 
 set -euo pipefail
+# Without this, set -e stops at the edge of a command substitution: a function
+# called as x="$(f)" keeps running after a failure instead of aborting.
+shopt -s inherit_errexit
 
 WORKDIR="${1:?usage: commit-branch.sh <workdir> <branch> <message>}"
 BRANCH="${2:?usage: commit-branch.sh <workdir> <branch> <message>}"
