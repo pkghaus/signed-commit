@@ -38,7 +38,7 @@ eq() { # label expected actual
 # assertions vanish rather than fail -- which is exactly what happened when
 # these groups were first lifted out of pkghaus/apt: eq() was left behind and
 # the suite still printed "all tests passed". Bump this when adding one.
-EXPECTED_ASSERTIONS=5
+EXPECTED_ASSERTIONS=8
 
 echo "the signed-commit payload describes every change, deletions included"
 (
@@ -136,6 +136,47 @@ echo "a tree with no changes makes no commit"
     PATH="$work/bin:$PATH" "$ROOT/commit-branch.sh" "$repo" archive "test" >/dev/null 2>&1
     if [ -f "$work/called" ]; then no "an unchanged tree must not call the API" "curl was called"
     else ok "an unchanged tree must not call the API"; fi
+    exit $((fail > 0))
+) || fail=$((fail + 1))
+
+echo "an HTTP failure reports what GitHub said, not just curl's exit code"
+(
+    work="$(mktemp -d)"
+    export GITHUB_TOKEN=fake GITHUB_REPOSITORY=pkghaus/apt
+
+    repo="$work/repo"; mkdir -p "$repo"; cd "$repo"
+    git init -q -b archive .
+    printf 'one\n' > keep.txt
+    git add -A
+    git -c user.name=t -c user.email=t@example.invalid commit -qm base
+    printf 'two\n' > keep.txt
+
+    # curl as --fail-with-body behaves on an HTTP error: the body is written
+    # to the output AND the exit status is non-zero. That combination is what
+    # used to lose the message -- set -e took the exit before anything printed
+    # the body, and the trap then deleted the file.
+    mkdir -p "$work/bin"
+    cat > "$work/bin/curl" <<'FAKE'
+#!/bin/sh
+printf '{"message":"Bad credentials","documentation_url":"https://docs.github.com/graphql"}'
+exit 22
+FAKE
+    chmod +x "$work/bin/curl"
+
+    out="$(PATH="$work/bin:$PATH" "$ROOT/commit-branch.sh" "$repo" archive "test" 2>&1)" \
+        && rc=0 || rc=$?
+
+    eq "the run fails" "1" "${rc:-0}"
+    case "$out" in
+        *"Bad credentials"*) ok "GitHub's own message reaches the log" ;;
+        *) no "GitHub's own message reaches the log" "got [$out]" ;;
+    esac
+    case "$out" in
+        *FATAL*) ok "and it is labelled as the failure it is" ;;
+        *) no "and it is labelled as the failure it is" "got [$out]" ;;
+    esac
+
+    cd /; rm -rf "$work"
     exit $((fail > 0))
 ) || fail=$((fail + 1))
 
