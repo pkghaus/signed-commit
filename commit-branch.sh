@@ -119,10 +119,27 @@ sys.stderr.write(f"{len(additions)} addition(s), {len(deletions)} deletion(s)\n"
 
 log "committing to $BRANCH, $(wc -c < "$payload") byte payload"
 
-curl -sS --fail-with-body -X POST "$API/graphql" \
+# --fail-with-body writes the body and exits non-zero, and under set -e that
+# exit skipped the reporting below and the trap deleted the file: an auth
+# failure or a 502 showed curl's generic "returned error: NNN" and nothing
+# GitHub actually said. The body is printed here instead, where it is still on
+# disk.
+#
+# --retry covers the transient half. This runs after the archive has already
+# been published to R2, so failing here leaves the bucket ahead of the state
+# branches until the next ingest repairs it. A retry is safe rather than
+# merely convenient: expectedHeadOid makes the mutation conditional, so if the
+# first attempt did land, the retry is refused for the right reason instead of
+# committing twice.
+if ! curl -sS --fail-with-body -X POST "$API/graphql" \
+    --max-time 120 --retry 3 --retry-connrefused --retry-all-errors \
     -H "Authorization: bearer $GITHUB_TOKEN" \
     -H 'Content-Type: application/json' \
-    --data @"$payload" > "$response"
+    --data @"$payload" > "$response"; then
+    log "FATAL: the GraphQL request to $API failed. What it returned:"
+    cat "$response" >&2
+    exit 1
+fi
 
 python3 - "$response" <<'PY'
 import json, sys
