@@ -47,10 +47,9 @@ cd "$WORKDIR"
 
 # createCommitOnBranch commits onto a branch that already exists; it cannot
 # create one, because a branch needs a commit and this is how commits are made.
-# The old git-push path bootstrapped a missing branch with `git init`, and that
-# is the one thing lost here. Both state branches have existed since the
-# archive did, so this fires only if one is deleted -- in which case the fix is
-# to recreate it deliberately, not to have a workflow guess at its contents.
+# Bootstrapping a missing branch is deliberately not done here: this fires only
+# if a state branch is deleted, and the fix then is to recreate it deliberately
+# rather than have a workflow guess at its contents.
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
     log "FATAL: $WORKDIR is not a checkout of $BRANCH."
     log "       The branch has to exist before anything can be committed to it."

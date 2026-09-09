@@ -151,10 +151,10 @@ echo "an HTTP failure reports what GitHub said, not just curl's exit code"
     git -c user.name=t -c user.email=t@example.invalid commit -qm base
     printf 'two\n' > keep.txt
 
-    # curl as --fail-with-body behaves on an HTTP error: the body is written
-    # to the output AND the exit status is non-zero. That combination is what
-    # used to lose the message -- set -e took the exit before anything printed
-    # the body, and the trap then deleted the file.
+    # curl as --fail-with-body behaves on an HTTP error: the body is written to
+    # the output AND the exit status is non-zero. That combination loses the
+    # message unless it is handled -- set -e takes the exit before anything
+    # prints the body, and the trap then deletes the file.
     mkdir -p "$work/bin"
     cat > "$work/bin/curl" <<'FAKE'
 #!/bin/sh
