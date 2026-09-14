@@ -25,10 +25,21 @@ inputs:
       default that silently resolved to the wrong token would be worse than
       a required argument.
     required: true
+outputs:
+  sha:
+    description: >-
+      The oid of the commit this created, or empty when the tree held no
+      changes and nothing was committed. A caller that has to act on the
+      commit must name it with this rather than resolve the branch again:
+      GitHub can still resolve a branch to its previous tip seconds after the
+      mutation, and a workflow dispatched on that name then reads the wrong
+      tree.
+    value: ${{ steps.commit.outputs.sha }}
 runs:
   using: composite
   steps:
-    - shell: bash
+    - id: commit
+      shell: bash
       env:
         WORKDIR: ${{ inputs.workdir }}
         BRANCH: ${{ inputs.branch }}

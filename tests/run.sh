@@ -38,7 +38,7 @@ eq() { # label expected actual
 # assertions vanish rather than fail -- which is exactly what happened when
 # these groups were first lifted out of pkghaus/apt: eq() was left behind and
 # the suite still printed "all tests passed". Bump this when adding one.
-EXPECTED_ASSERTIONS=8
+EXPECTED_ASSERTIONS=13
 
 echo "the signed-commit payload describes every change, deletions included"
 (
@@ -133,9 +133,15 @@ echo "a tree with no changes makes no commit"
     git -c user.name=t -c user.email=t@example.invalid commit -qm base
     mkdir -p "$work/bin"
     printf '#!/bin/sh\ntouch %s/called\n' "$work" > "$work/bin/curl"; chmod +x "$work/bin/curl"
-    PATH="$work/bin:$PATH" "$ROOT/commit-branch.sh" "$repo" archive "test" >/dev/null 2>&1
+    out="$work/gh-output"; : > "$out"
+    GITHUB_OUTPUT="$out" PATH="$work/bin:$PATH" \
+        "$ROOT/commit-branch.sh" "$repo" archive "test" >/dev/null 2>&1
     if [ -f "$work/called" ]; then no "an unchanged tree must not call the API" "curl was called"
     else ok "an unchanged tree must not call the API"; fi
+    # Empty rather than absent. A caller distinguishes "nothing to commit" from
+    # "committed" by reading this; an absent key and an empty one look the same
+    # to a workflow expression, but only one of them is written on purpose.
+    eq "and it reports an empty sha rather than none" "sha=" "$(cat "$out")"
     exit $((fail > 0))
 ) || fail=$((fail + 1))
 
@@ -175,6 +181,80 @@ FAKE
         *FATAL*) ok "and it is labelled as the failure it is" ;;
         *) no "and it is labelled as the failure it is" "got [$out]" ;;
     esac
+
+    cd /; rm -rf "$work"
+    exit $((fail > 0))
+) || fail=$((fail + 1))
+
+echo "the commit oid reaches the caller, which is how a dispatch names the right tree"
+(
+    work="$(mktemp -d)"
+    export GITHUB_TOKEN=fake GITHUB_REPOSITORY=pkghaus/packages
+    # A real oid from the incident this output exists to prevent: the ouch bump
+    # whose release was dispatched against the branch NAME and resolved to the
+    # tip before it.
+    oid=0fe3b0a783f5ec2041b2b90299b4be61123b15fd
+
+    repo="$work/repo"; mkdir -p "$repo"; cd "$repo"
+    git init -q -b master .
+    printf 'VERSION=0.8.2\n' > package.conf
+    git add -A
+    git -c user.name=t -c user.email=t@example.invalid commit -qm base
+    printf 'VERSION=0.8.3\n' > package.conf
+
+    mkdir -p "$work/bin"
+    cat > "$work/bin/curl" <<FAKE
+#!/bin/sh
+echo '{"data":{"createCommitOnBranch":{"commit":{"oid":"$oid","signature":{"isValid":true,"state":"VALID"}}}}}'
+FAKE
+    chmod +x "$work/bin/curl"
+
+    out="$work/gh-output"; : > "$out"
+    GITHUB_OUTPUT="$out" PATH="$work/bin:$PATH" \
+        "$ROOT/commit-branch.sh" "$repo" master "bump" >/dev/null 2>&1
+
+    # The FULL oid. The log line prints oid[:12] and emitting that instead
+    # would be a tag pointing at nothing, so the length is the assertion.
+    eq "the full oid is emitted, not the 12-character log form" \
+       "sha=$oid" "$(cat "$out")"
+
+    # Every local run and this whole suite has no GITHUB_OUTPUT. Appending to
+    # an unset path would abort the script after the commit had already landed.
+    PATH="$work/bin:$PATH" "$ROOT/commit-branch.sh" "$repo" master "bump" \
+        >/dev/null 2>&1 && rc=0 || rc=$?
+    eq "an unset GITHUB_OUTPUT is not a failure" "0" "${rc:-1}"
+
+    cd /; rm -rf "$work"
+    exit $((fail > 0))
+) || fail=$((fail + 1))
+
+echo "a commit GitHub refused to sign emits no oid at all"
+(
+    work="$(mktemp -d)"
+    export GITHUB_TOKEN=fake GITHUB_REPOSITORY=pkghaus/packages
+
+    repo="$work/repo"; mkdir -p "$repo"; cd "$repo"
+    git init -q -b master .
+    printf 'one\n' > f.txt
+    git add -A
+    git -c user.name=t -c user.email=t@example.invalid commit -qm base
+    printf 'two\n' > f.txt
+
+    mkdir -p "$work/bin"
+    cat > "$work/bin/curl" <<'FAKE'
+#!/bin/sh
+echo '{"data":{"createCommitOnBranch":{"commit":{"oid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","signature":{"isValid":false,"state":"UNSIGNED"}}}}}'
+FAKE
+    chmod +x "$work/bin/curl"
+
+    out="$work/gh-output"; : > "$out"
+    GITHUB_OUTPUT="$out" PATH="$work/bin:$PATH" \
+        "$ROOT/commit-branch.sh" "$repo" master "test" >/dev/null 2>&1 && rc=0 || rc=$?
+
+    eq "the run fails" "1" "${rc:-0}"
+    # The oid is printed after the signature check for exactly this reason: a
+    # caller that tagged this would be naming an unsigned commit.
+    eq "and nothing is handed to the caller" "" "$(cat "$out")"
 
     cd /; rm -rf "$work"
     exit $((fail > 0))
