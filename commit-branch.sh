@@ -62,8 +62,23 @@ if [ "${#PATHSPEC[@]}" -gt 0 ]; then
 else
     git add -A
 fi
+# The oid of the commit this makes, for a caller that has to name it. Without
+# it a caller can only ask GitHub to resolve the branch by name afterwards, and
+# that is a race: a workflow dispatched seconds after this mutation can still
+# resolve the branch to the PREVIOUS tip and then act on the wrong tree.
+# pkghaus/packages lost an ouch release to exactly that on 2026-09-13.
+#
+# Empty when nothing was committed, so a caller can tell the two apart rather
+# than inferring it from a tip that did not move. Silent when GITHUB_OUTPUT is
+# unset, which is every local run and the whole test suite.
+emit_sha() { # oid
+    [ -n "${GITHUB_OUTPUT:-}" ] || return 0
+    printf 'sha=%s\n' "$1" >> "$GITHUB_OUTPUT"
+}
+
 if git diff --cached --quiet HEAD -- "${PATHSPEC[@]}" 2>/dev/null; then
     log "nothing changed on $BRANCH"
+    emit_sha ""
     exit 0
 fi
 
@@ -140,7 +155,15 @@ if ! curl -sS --fail-with-body -X POST "$API/graphql" \
     exit 1
 fi
 
-python3 - "$response" <<'PY'
+# stdout carries the oid and nothing else, so the substitution below captures
+# it; every diagnostic goes to stderr as before.
+#
+# What keeps an unsigned commit from reaching the caller is the exit status,
+# not the order of the prints: a non-zero exit here makes the assignment fail,
+# and set -e stops the script before emit_sha runs. Printing the oid after the
+# signature check is belt-and-braces on top of that, which is why moving it
+# earlier does not break the tests.
+oid="$(python3 - "$response" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 if d.get("errors"):
@@ -153,4 +176,7 @@ print(f'committed {c["oid"][:12]} signature={sig.get("state")} valid={sig.get("i
 if not sig.get("isValid"):
     print("FATAL: GitHub did not sign the commit", file=sys.stderr)
     raise SystemExit(1)
+print(c["oid"])
 PY
+)"
+emit_sha "$oid"

@@ -60,6 +60,20 @@ assert not missing, f"inputs never passed to the step: {sorted(missing)}"
 # shell metacharacters cannot become shell.
 assert "${{" not in step["run"], "expression interpolated inside run:"
 
+# Every output must read from the step that actually runs, or it is wired to
+# nothing and resolves to the empty string forever -- which looks exactly like
+# a commit that changed nothing. The step therefore needs an id, and each
+# output's value has to name it.
+outputs = doc.get("outputs", {})
+if outputs:
+    step_id = step.get("id")
+    assert step_id, "outputs are declared but the step has no id to read from"
+    for name, spec in outputs.items():
+        value = str(spec.get("value", ""))
+        assert f"steps.{step_id}.outputs." in value, \
+            f"output {name!r} does not read from steps.{step_id}.outputs"
+    print(f"  ok   {len(outputs)} output(s) wired to step id {step_id!r}")
+
 with open(sys.argv[1], "w") as out:
     out.write("#!/usr/bin/env bash\nset -euo pipefail\n")
     out.write(step["run"])

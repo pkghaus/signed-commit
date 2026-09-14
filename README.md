@@ -54,6 +54,34 @@ The action exits successfully without committing when the staged diff is
 empty, so a reproducible build that produces identical bytes is a no-op rather
 than an empty commit.
 
+### Outputs
+
+| Output | Description |
+|---|---|
+| `sha` | The oid of the commit, or empty when nothing was committed. |
+
+Use it to name the commit rather than resolving the branch again. GitHub can
+still resolve a branch to its previous tip seconds after the mutation lands,
+so a workflow dispatched on the branch NAME may check out the commit before
+this one and act on the wrong tree:
+
+```yaml
+      - uses: pkghaus/signed-commit@v1
+        id: commit
+        with:
+          workdir: .
+          branch: master
+          message: "..."
+          token: ${{ github.token }}
+
+      - run: gh workflow run release.yml -f sha="$SHA"
+        env:
+          SHA: ${{ steps.commit.outputs.sha }}
+```
+
+An empty `sha` means the tree held no changes, which is not the same as a
+commit that failed: a failure exits non-zero and emits nothing at all.
+
 ### The token is required, with no default
 
 A composite action does not inherit the caller's secrets, and an input default
