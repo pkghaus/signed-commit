@@ -31,9 +31,10 @@ set -euo pipefail
 # called as x="$(f)" keeps running after a failure instead of aborting.
 shopt -s inherit_errexit
 
-WORKDIR="${1:?usage: commit-branch.sh <workdir> <branch> <message>}"
-BRANCH="${2:?usage: commit-branch.sh <workdir> <branch> <message>}"
-MESSAGE="${3:?usage: commit-branch.sh <workdir> <branch> <message> [pathspec ...]}"
+USAGE="usage: commit-branch.sh <workdir> <branch> <message> [pathspec ...]"
+WORKDIR="${1:?$USAGE}"
+BRANCH="${2:?$USAGE}"
+MESSAGE="${3:?$USAGE}"
 shift 3
 PATHSPEC=("$@")
 
@@ -56,12 +57,10 @@ if ! git rev-parse --git-dir >/dev/null 2>&1; then
     exit 1
 fi
 
-# Stage so git decides what changed, not a directory walk.
-if [ "${#PATHSPEC[@]}" -gt 0 ]; then
-    git add -A -- "${PATHSPEC[@]}"
-else
-    git add -A
-fi
+# Stage so git decides what changed, not a directory walk. An empty PATHSPEC
+# expands to nothing, which after -- means exactly what passing no pathspec
+# means; both diffs below already rely on that.
+git add -A -- "${PATHSPEC[@]}"
 # The oid of the commit this makes, for a caller that has to name it. Without
 # it a caller can only ask GitHub to resolve the branch by name afterwards, and
 # that is a race: a workflow dispatched seconds after this mutation can still
@@ -76,7 +75,7 @@ emit_sha() { # oid
     printf 'sha=%s\n' "$1" >> "$GITHUB_OUTPUT"
 }
 
-if git diff --cached --quiet HEAD -- "${PATHSPEC[@]}" 2>/dev/null; then
+if git diff --cached --quiet HEAD -- "${PATHSPEC[@]}"; then
     log "nothing changed on $BRANCH"
     emit_sha ""
     exit 0

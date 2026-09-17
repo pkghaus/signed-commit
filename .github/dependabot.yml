@@ -1,9 +1,13 @@
 version: 2
 
 updates:
-  # Actions are pinned to commit SHAs and the linters by image digest, which
-  # is what stops a moved tag changing what runs here. It is also what stops
-  # them updating on their own.
+  # The one action here is first-party and stays on a major tag deliberately:
+  # GitHub owns both the tag and the content a SHA would pin, so pinning moves
+  # trust from GitHub to GitHub. This entry is what keeps that tag current.
+  #
+  # The two linters ARE pinned, by image digest, because they are third party.
+  # They sit inside `run: docker run ...` blocks, which this ecosystem does not
+  # read, so those move by hand.
   - package-ecosystem: github-actions
     directory: /
     schedule:
