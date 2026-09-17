@@ -21,7 +21,7 @@ body="$(mktemp)"
 trap 'rm -f "$body"' EXIT
 
 python3 - "$body" <<'PY'
-import sys, yaml
+import re, sys, yaml
 
 class Strict(yaml.SafeLoader):
     pass
@@ -51,9 +51,14 @@ assert step["shell"] == "bash", "run: without shell: bash is a load-time error"
 # Compared on the env VALUES, not the names: an input is free to arrive under
 # a different variable (token -> GITHUB_TOKEN), so matching names would report
 # a gap that is not there.
+# Matched on a word boundary. A plain substring test let an input whose name
+# is a prefix of another's ("path" against a piped "pathspec") report as
+# covered while never reaching the step -- the check passing on work it did
+# not do, which is the one thing it exists to catch.
 declared = set(doc["inputs"])
 piped = " ".join(str(v) for v in step.get("env", {}).values())
-missing = {name for name in declared if f"inputs.{name}" not in piped}
+referenced = set(re.findall(r"inputs\.([A-Za-z0-9_-]+)", piped))
+missing = declared - referenced
 assert not missing, f"inputs never passed to the step: {sorted(missing)}"
 
 # Expressions belong in env:, never in the run body, so a value containing

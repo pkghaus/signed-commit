@@ -23,8 +23,14 @@ fail=0
 # Each group runs in a subshell, so a counter variable incremented inside one
 # never reaches this scope. The tally goes through a file instead, which is
 # the only way the assertion-count guard below can see anything at all.
+# One scratch root for the whole suite, exported as TMPDIR so every mktemp
+# below lands inside it. Three of the six groups cleaned up after themselves
+# and three did not, and a group exiting early leaked whatever its own
+# trailing rm would have removed.
+TMPROOT="$(mktemp -d)"
+export TMPDIR="$TMPROOT"
 TALLY="$(mktemp)"
-trap 'rm -f "$TALLY"' EXIT
+trap 'rm -rf "$TMPROOT"' EXIT
 
 ok() { printf '  ok   %s\n' "$1"; echo ok >> "$TALLY"; }
 no() { printf '  FAIL %s\n    %s\n' "$1" "$2"; echo no >> "$TALLY"; fail=$((fail + 1)); }
@@ -60,7 +66,6 @@ echo "the signed-commit payload describes every change, deletions included"
     mkdir -p "$work/bin"
     cat > "$work/bin/curl" <<FAKE
 #!/bin/sh
-for a in "\$@"; do case "\$a" in --data@*) ;; esac; done
 prev=""
 for a in "\$@"; do
   case "\$prev" in --data) cp "\${a#@}" "$work/payload.json" ;; esac
@@ -70,7 +75,7 @@ echo '{"data":{"createCommitOnBranch":{"commit":{"oid":"deadbeefdeadbeef","signa
 FAKE
     chmod +x "$work/bin/curl"
 
-    PATH="$work/bin:$PATH" "$ROOT/commit-branch.sh" "$repo" archive "test" >/dev/null 2>&1 || true
+    PATH="$work/bin:$PATH" "$ROOT/commit-branch.sh" "$repo" archive "test" >/dev/null 2>&1
 
     if [ ! -f "$work/payload.json" ]; then
         no "the payload is built" "no payload captured"
@@ -113,7 +118,7 @@ done
 echo '{"data":{"createCommitOnBranch":{"commit":{"oid":"cafebabecafebabe","signature":{"isValid":true,"state":"VALID"}}}}}'
 FAKE
     chmod +x "$work/bin/curl"
-    PATH="$work/bin:$PATH" "$ROOT/commit-branch.sh" "$repo" master "cuts" png/ >/dev/null 2>&1 || true
+    PATH="$work/bin:$PATH" "$ROOT/commit-branch.sh" "$repo" master "cuts" png/ >/dev/null 2>&1
 
     if [ ! -f "$work/payload.json" ]; then
         no "a pathspec-scoped commit is built" "no payload captured"
@@ -182,7 +187,6 @@ FAKE
         *) no "and it is labelled as the failure it is" "got [$out]" ;;
     esac
 
-    cd /; rm -rf "$work"
     exit $((fail > 0))
 ) || fail=$((fail + 1))
 
@@ -224,7 +228,6 @@ FAKE
         >/dev/null 2>&1 && rc=0 || rc=$?
     eq "an unset GITHUB_OUTPUT is not a failure" "0" "${rc:-1}"
 
-    cd /; rm -rf "$work"
     exit $((fail > 0))
 ) || fail=$((fail + 1))
 
@@ -256,7 +259,6 @@ FAKE
     # caller that tagged this would be naming an unsigned commit.
     eq "and nothing is handed to the caller" "" "$(cat "$out")"
 
-    cd /; rm -rf "$work"
     exit $((fail > 0))
 ) || fail=$((fail + 1))
 
