@@ -17,7 +17,9 @@ shopt -s inherit_errexit
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-body="$(mktemp)"
+# Inside the checkout, so the containerised checker CI uses can see it;
+# prefixed, so a killed run's leftover names itself in git status.
+body="$(mktemp -p . .lint-action-body.XXXXXX)"
 trap 'rm -f "$body"' EXIT
 
 python3 - "$body" <<'PY'
@@ -85,6 +87,9 @@ with open(sys.argv[1], "w") as out:
 print("  ok   action.yml parses, one bash step, every input piped, no inline expressions")
 PY
 
+# $SHELLCHECK selects the checker. CI points it at the digest-pinned container
+# the .sh files go through, so one version judges every line of shell here.
+read -ra shellcheck <<< "${SHELLCHECK:-shellcheck}"
 # SC2154: the variables come from the step's env:, which shellcheck cannot see.
-shellcheck -S style -e SC2154 "$body"
+"${shellcheck[@]}" -S style -e SC2154 "$body"
 echo "  ok   the run body is shellcheck-clean"

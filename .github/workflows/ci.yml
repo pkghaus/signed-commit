@@ -35,6 +35,10 @@ jobs:
             commit-branch.sh tests/*.sh
 
       - name: Lint the action metadata and its inline shell
+        env:
+          SHELLCHECK: >-
+            docker run --rm --volume ${{ github.workspace }}:/repo --workdir /repo
+            koalaman/shellcheck@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
         run: tests/lint-action.sh
 
       - name: Test
