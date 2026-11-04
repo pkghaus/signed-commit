@@ -107,6 +107,14 @@ output and reading raw never unquotes them.
 having moved since checkout, which is the behaviour you want: a mismatch means
 something genuinely unexpected happened and failing is correct.
 
+**An error does not mean nothing was committed.** GitHub can answer the
+mutation with `Something went wrong while executing your query` after it has
+made the commit. On any error the action reads the branch tip and takes it as
+its own commit only if the tip's parent is the checked-out `HEAD`, its tree is
+the staged tree and GitHub reports it verified; otherwise it tries again, three
+attempts in all. `expectedHeadOid` refuses every attempt after one has landed,
+so a retry cannot commit twice.
+
 **File contents go base64 in the request body**, so payload size is the
 practical ceiling on what one commit can carry.
 
