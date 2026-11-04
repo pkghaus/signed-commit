@@ -83,11 +83,14 @@ fi
 
 export BRANCH MESSAGE GITHUB_REPOSITORY
 HEAD_OID="$(git rev-parse HEAD)"
-export HEAD_OID
+# The tree the mutation should build: HEAD plus what was staged above.
+EXPECTED_TREE="$(git write-tree)"
+export HEAD_OID EXPECTED_TREE
 
 payload="$(mktemp)"
 response="$(mktemp)"
-trap 'rm -f "$payload" "$response"' EXIT
+tip="$(mktemp)"
+trap 'rm -f "$payload" "$response" "$tip"' EXIT
 
 # -z output and NUL parsing: a path may contain anything but NUL, and git
 # quotes unusual ones in its default format. Reading raw never unquotes.
@@ -132,42 +135,38 @@ sys.stderr.write(f"{len(additions)} addition(s), {len(deletions)} deletion(s)\n"
 
 log "committing to $BRANCH, $(wc -c < "$payload") byte payload"
 
-# --fail-with-body writes the body and exits non-zero, and under set -e that
-# exit skipped the reporting below and the trap deleted the file: an auth
-# failure or a 502 showed curl's generic "returned error: NNN" and nothing
-# GitHub actually said. The body is printed here instead, where it is still on
-# disk.
-#
-# --retry covers the transient half. This runs after the archive has already
-# been published to R2, so failing here leaves the bucket ahead of the state
-# branches until the next ingest repairs it. A retry is safe rather than
-# merely convenient: expectedHeadOid makes the mutation conditional, so if the
-# first attempt did land, the retry is refused for the right reason instead of
-# committing twice.
-if ! curl -sS --fail-with-body -X POST "$API/graphql" \
-    --max-time 120 --retry 3 --retry-connrefused --retry-all-errors \
-    -H "Authorization: bearer $GITHUB_TOKEN" \
-    -H 'Content-Type: application/json' \
-    --data @"$payload" > "$response"; then
-    log "FATAL: the GraphQL request to $API failed. What it returned:"
-    cat "$response" >&2
-    exit 1
-fi
+# Prints the new oid, or nothing when GitHub answered with errors. What a retry
+# cannot fix, a failed request or an unsigned commit, exits instead.
+mutate() {
+    # --fail-with-body writes the body and exits non-zero, and under set -e that
+    # exit skipped the reporting below and the trap deleted the file: an auth
+    # failure or a 502 showed curl's generic "returned error: NNN" and nothing
+    # GitHub actually said. The body is printed here instead, where it is still
+    # on disk.
+    #
+    # --retry covers transport failures. An error GitHub reports inside a 2xx
+    # body is not one; the loop below handles that.
+    if ! curl -sS --fail-with-body -X POST "$API/graphql" \
+        --max-time 120 --retry 3 --retry-connrefused --retry-all-errors \
+        -H "Authorization: bearer $GITHUB_TOKEN" \
+        -H 'Content-Type: application/json' \
+        --data @"$payload" > "$response"; then
+        log "FATAL: the GraphQL request to $API failed. What it returned:"
+        cat "$response" >&2
+        exit 1
+    fi
 
-# stdout carries the oid and nothing else, so the substitution below captures
-# it; every diagnostic goes to stderr as before.
-#
-# What keeps an unsigned commit from reaching the caller is the exit status,
-# not the order of the prints: a non-zero exit here makes the assignment fail,
-# and set -e stops the script before emit_sha runs. Printing the oid after the
-# signature check is belt-and-braces on top of that, which is why moving it
-# earlier does not break the tests.
-oid="$(python3 - "$response" <<'PY'
+    # stdout carries the oid and nothing else; every diagnostic goes to stderr.
+    #
+    # What keeps an unsigned commit from reaching the caller is the exit status,
+    # not the order of the prints: a non-zero exit here makes the assignment
+    # fail, and set -e stops the script before emit_sha runs.
+    python3 - "$response" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 if d.get("errors"):
-    print("FATAL: " + "; ".join(e.get("message", "?") for e in d["errors"]), file=sys.stderr)
-    raise SystemExit(1)
+    print("error: " + "; ".join(e.get("message", "?") for e in d["errors"]), file=sys.stderr)
+    raise SystemExit(0)
 c = d["data"]["createCommitOnBranch"]["commit"]
 sig = c.get("signature") or {}
 print(f'committed {c["oid"][:12]} signature={sig.get("state")} valid={sig.get("isValid")}',
@@ -177,5 +176,42 @@ if not sig.get("isValid"):
     raise SystemExit(1)
 print(c["oid"])
 PY
-)"
+}
+
+# Prints the branch tip's oid if the tip is this commit: parented on HEAD_OID,
+# carrying the staged tree, and signed. Anything else fails closed.
+landed() {
+    curl -sS --fail-with-body --max-time 30 --retry 3 --retry-all-errors \
+        -H "Authorization: bearer $GITHUB_TOKEN" \
+        "$API/repos/$GITHUB_REPOSITORY/commits/heads/$BRANCH" > "$tip" || return 1
+    python3 - "$tip" <<'PY'
+import json, os, sys
+c = json.load(open(sys.argv[1]))
+if ([p["sha"] for p in c["parents"]] != [os.environ["HEAD_OID"]]
+        or c["commit"]["tree"]["sha"] != os.environ["EXPECTED_TREE"]
+        or not c["commit"]["verification"]["verified"]):
+    raise SystemExit(1)
+print(c["sha"])
+PY
+}
+
+# GitHub can report "Something went wrong while executing your query" for a
+# mutation it carried out, so an error is checked against the branch before
+# anything is retried. A retry is safe: once one attempt has landed,
+# expectedHeadOid refuses the rest. The pauses give a branch that still
+# resolves to its old tip time to catch up.
+oid=""
+for pause in 5 15 40; do
+    oid="$(mutate)"
+    [ -n "$oid" ] && break
+    sleep "$pause"
+    if oid="$(landed)"; then
+        log "GitHub reported an error but committed ${oid:0:12}; using it"
+        break
+    fi
+done
+if [ -z "$oid" ]; then
+    log "FATAL: no attempt committed to $BRANCH, and its tip is not this commit"
+    exit 1
+fi
 emit_sha "$oid"

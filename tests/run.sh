@@ -44,7 +44,7 @@ eq() { # label expected actual
 # assertions vanish rather than fail -- which is exactly what happened when
 # these groups were first lifted out of pkghaus/apt: eq() was left behind and
 # the suite still printed "all tests passed". Bump this when adding one.
-EXPECTED_ASSERTIONS=13
+EXPECTED_ASSERTIONS=26
 
 echo "the signed-commit payload describes every change, deletions included"
 (
@@ -258,6 +258,99 @@ FAKE
     # The oid is printed after the signature check for exactly this reason: a
     # caller that tagged this would be naming an unsigned commit.
     eq "and nothing is handed to the caller" "" "$(cat "$out")"
+
+    exit $((fail > 0))
+) || fail=$((fail + 1))
+
+echo "an error from the mutation is checked against the branch before it fails"
+(
+    work="$(mktemp -d)"
+    export GITHUB_TOKEN=fake GITHUB_REPOSITORY=pkghaus/packages
+
+    repo="$work/repo"; mkdir -p "$repo"; cd "$repo"
+    git init -q -b master .
+    printf 'VERSION=v0.2.95\n' > package.conf
+    git add -A
+    git -c user.name=t -c user.email=t@example.invalid commit -qm base
+    head="$(git rev-parse HEAD)"
+    base_tree="$(git rev-parse 'HEAD^{tree}')"
+
+    # The tree GitHub would build, worked out apart from the script: a real
+    # commit of the same change in a clone.
+    git clone -q "$repo" "$work/clone"
+    printf 'VERSION=v0.2.96\n' | tee package.conf > "$work/clone/package.conf"
+    git -C "$work/clone" -c user.name=t -c user.email=t@example.invalid commit -qam bump
+    tree="$(git -C "$work/clone" rev-parse 'HEAD^{tree}')"
+
+    # GitHub's message from the run whose commit landed regardless. The
+    # backticks are its own.
+    # shellcheck disable=SC2016
+    err='{"errors":[{"message":"Something went wrong while executing your query on 2026-11-03T23:23:25Z. Please include `0402:41EF6:164DE3:17BEFB:6AEA6CE9` when reporting this issue."}]}'
+    landed=2a8060afd330340e35e76998304c11f927403792
+    ok_reply() { printf '{"data":{"createCommitOnBranch":{"commit":{"oid":"%s","signature":{"isValid":true,"state":"VALID"}}}}}' "$1"; }
+    tip() { # sha parent tree verified
+        printf '{"sha":"%s","parents":[{"sha":"%s"}],"commit":{"tree":{"sha":"%s"},"verification":{"verified":%s}}}' \
+            "$@" > "$work/tip"
+    }
+
+    # The Nth mutation answers with mutation.N if present, else mutation; any
+    # other request is the branch lookup.
+    mkdir -p "$work/bin"
+    cat > "$work/bin/curl" <<FAKE
+#!/bin/sh
+case "\$*" in
+  */graphql*)
+    n=\$((\$(cat "$work/calls" 2>/dev/null || echo 0) + 1)); echo "\$n" > "$work/calls"
+    if [ -f "$work/mutation.\$n" ]; then cat "$work/mutation.\$n"; else cat "$work/mutation"; fi ;;
+  *) cat "$work/tip" ;;
+esac
+FAKE
+    printf '#!/bin/sh\n' > "$work/bin/sleep"
+    chmod +x "$work/bin/curl" "$work/bin/sleep"
+
+    fresh() { rm -f "$work/calls" "$work"/mutation*; : > "$work/out"; }
+    run() {
+        GITHUB_OUTPUT="$work/out" PATH="$work/bin:$PATH" \
+            "$ROOT/commit-branch.sh" "$repo" master "bump" >/dev/null 2>"$work/log"
+    }
+
+    # The incident: GitHub answers with an error, and the commit is on master.
+    fresh; printf '%s' "$err" > "$work/mutation"; tip "$landed" "$head" "$tree" true
+    run && rc=0 || rc=$?
+    eq "a commit that landed despite the error is a success" "0" "$rc"
+    eq "and its oid reaches the caller" "sha=$landed" "$(cat "$work/out")"
+    eq "and it is not committed a second time" "1" "$(cat "$work/calls")"
+
+    # The error was real: the branch has not moved, so the mutation is retried.
+    fresh; printf '%s' "$err" > "$work/mutation.1"; ok_reply cafebabecafebabe > "$work/mutation"
+    tip "$head" 0000000000000000000000000000000000000000 "$base_tree" true
+    run && rc=0 || rc=$?
+    eq "a commit that did not land is retried" "0" "$rc"
+    eq "and the retry's oid reaches the caller" "sha=cafebabecafebabe" "$(cat "$work/out")"
+    eq "after exactly one retry" "2" "$(cat "$work/calls")"
+
+    # Our parent and tree, but unsigned: never handed to the caller.
+    fresh; printf '%s' "$err" > "$work/mutation"; tip "$landed" "$head" "$tree" false
+    run && rc=0 || rc=$?
+    eq "an unsigned tip is not taken for this commit" "1" "$rc"
+    eq "and nothing is handed to the caller" "" "$(cat "$work/out")"
+    case "$(cat "$work/log")" in
+        *"Something went wrong"*) ok "GitHub's own message reaches the log" ;;
+        *) no "GitHub's own message reaches the log" "got [$(cat "$work/log")]" ;;
+    esac
+
+    # Someone else's commit on the same parent: a different tree.
+    fresh; printf '%s' "$err" > "$work/mutation"; tip "$landed" "$head" "$base_tree" true
+    run && rc=0 || rc=$?
+    eq "a tip with another tree is not taken for this commit" "1" "$rc"
+    eq "and nothing is handed to the caller" "" "$(cat "$work/out")"
+
+    # The same tree on another parent: not the commit this run asked for.
+    fresh; printf '%s' "$err" > "$work/mutation"
+    tip "$landed" 1111111111111111111111111111111111111111 "$tree" true
+    run && rc=0 || rc=$?
+    eq "a tip on another parent is not taken for this commit" "1" "$rc"
+    eq "and nothing is handed to the caller" "" "$(cat "$work/out")"
 
     exit $((fail > 0))
 ) || fail=$((fail + 1))
